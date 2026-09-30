@@ -149,20 +149,23 @@ unary_expression
 
 // ---- Primary expressions ----
 
+// Alternatives are labelled so each form gets its own parse-tree context
+// (e.g. Invoke_expressionContext); the four postfix forms are the spec's
+// invoke-, item-access-, field-access- and projection expressions.
 primary_expression
-    : literal_expression
-    | list_expression
-    | record_expression
-    | identifier_expression
-    | section_access_expression
-    | parenthesized_expression
-    | implicit_target_field_selection
-    | implicit_target_projection
-    | not_implemented_expression
-    | primary_expression OPEN_PAREN argument_list? CLOSE_PAREN               // invoke-expression
-    | primary_expression OPEN_BRACE item_selector CLOSE_BRACE QUESTION_MARK? // item-access-expression
-    | primary_expression field_selector                                      // field-selection
-    | primary_expression required_projection QUESTION_MARK?                  // projection
+    : literal_expression                                                     # literal_primary
+    | list_expression                                                        # list_primary
+    | record_expression                                                      # record_primary
+    | identifier_expression                                                  # identifier_primary
+    | section_access_expression                                              # section_access_primary
+    | parenthesized_expression                                               # parenthesized_primary
+    | implicit_target_field_selection                                        # implicit_field_selection_primary
+    | implicit_target_projection                                             # implicit_projection_primary
+    | not_implemented_expression                                             # not_implemented_primary
+    | primary_expression OPEN_PAREN argument_list? CLOSE_PAREN               # invoke_expression
+    | primary_expression OPEN_BRACE item_selector CLOSE_BRACE QUESTION_MARK? # item_access_expression
+    | primary_expression field_selector                                      # field_access_expression
+    | primary_expression required_projection QUESTION_MARK?                  # projection_expression
     ;
 
 literal_expression
