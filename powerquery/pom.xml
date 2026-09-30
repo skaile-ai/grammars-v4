@@ -40,6 +40,7 @@
 					<entryPoint>document</entryPoint>
 					<grammarName>PowerQuery</grammarName>
 					<packageName></packageName>
+					<exampleFiles>examples/</exampleFiles>
 				</configuration>
 				<executions>
 					<execution>

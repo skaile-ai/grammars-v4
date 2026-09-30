@@ -1,3 +1,49 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2026 Skaile GmbH
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+/*
+ * Power Query M formula language — syntactic grammar.
+ *
+ * Rule names follow the productions of the "M Language Consolidated Grammar"
+ * (https://learn.microsoft.com/powerquery-m/m-spec-consolidated-grammar), with
+ * '-' written as '_'. Departures from the specification, each matching what the
+ * Power Query product accepts:
+ *   - the null-coalescing operator '??' binds looser than 'or' (it is in the
+ *     spec's punctuator list but in none of its productions);
+ *   - 'try ... catch (e) => ...' is supported;
+ *   - generalized identifiers (record field names and field selectors such as
+ *     [Sales Amount] or [1st Quarter]) are a sequence of identifier, keyword and
+ *     number tokens; the spec's "separated only by blanks" cannot be checked
+ *     without target code, so a comment between two parts is accepted;
+ *   - a table type may take its row type from an expression: type table (t);
+ *   - binary operators are written left-recursively, which gives the left
+ *     associativity the spec's semantics require.
+ *
+ * Inherent ambiguity: in a type position, 'number', '{number}' or '[a = text]'
+ * can be read either as a type or as an expression; primary_type is tried first.
+ */
+
 // $antlr-format alignTrailingComments true, columnLimit 150, minEmptyLines 1, maxEmptyLinesToKeep 1, reflowComments false, useTab false
 // $antlr-format allowShortRulesOnASingleLine false, allowShortBlocksOnASingleLine true, alignSemicolons hanging, alignColons hanging
 
@@ -7,53 +53,51 @@ options {
     tokenVocab = PowerQueryLexer;
 }
 
+// ---- Documents ----
+
 document
-    : section_document
-    | expression_document
+    : (section_document | expression_document) EOF
     ;
 
 section_document
-    : section
-    ;
-
-section
-    : literal_attribs? SECTION section_name SEMICOLON section_members?
+    : literal_attributes? SECTION section_name SEMICOLON section_member*
     ;
 
 section_name
-    : IDENTIFIER
-    ;
-
-section_members
-    : section_member section_members?
+    : identifier
     ;
 
 section_member
-    : literal_attribs? SHARED? section_member_name EQUALS expression SEMICOLON
+    : literal_attributes? SHARED? section_member_name EQUALS expression SEMICOLON
     ;
 
 section_member_name
-    : IDENTIFIER
+    : identifier
     ;
 
 expression_document
     : expression
     ;
 
+// ---- Expressions ----
+
 expression
-    : logical_or_expression
-    | each_expression
+    : each_expression
     | function_expression
     | let_expression
     | if_expression
-    | let_expression
     | error_raising_expression
     | error_handling_expression
+    | null_coalescing_expression
+    ;
+
+null_coalescing_expression
+    : logical_or_expression (NULL_COALESCING logical_or_expression)*
     ;
 
 logical_or_expression
     : logical_and_expression
-    | logical_and_expression OR logical_or_expression
+    | logical_or_expression OR logical_and_expression
     ;
 
 logical_and_expression
@@ -63,48 +107,37 @@ logical_and_expression
 
 is_expression
     : as_expression
-    | is_expression IS nullable_primitive_type
-    ;
-
-nullable_primitive_type
-    : NULLABLE? primitive_type
+    | is_expression IS primitive_or_nullable_primitive_type
     ;
 
 as_expression
     : equality_expression
-    | as_expression AS nullable_primitive_type
+    | as_expression AS primitive_or_nullable_primitive_type
     ;
 
 equality_expression
     : relational_expression
-    | relational_expression EQUALS equality_expression
-    | relational_expression NEQ equality_expression
+    | equality_expression (EQUALS | NOT_EQUAL) relational_expression
     ;
 
 relational_expression
     : additive_expression
-    | additive_expression LE relational_expression
-    | additive_expression GE relational_expression
-    | additive_expression LEQ additive_expression
-    | additive_expression GEQ relational_expression
+    | relational_expression (LESS_THAN | GREATER_THAN | LESS_THAN_OR_EQUAL | GREATER_THAN_OR_EQUAL) additive_expression
     ;
 
 additive_expression
     : multiplicative_expression
-    | multiplicative_expression PLUS additive_expression
-    | multiplicative_expression MINUS additive_expression
-    | multiplicative_expression AMP additive_expression
+    | additive_expression (PLUS | MINUS | AMPERSAND) multiplicative_expression
     ;
 
 multiplicative_expression
     : metadata_expression
-    | metadata_expression STAR multiplicative_expression
-    | metadata_expression SLASH multiplicative_expression
+    | multiplicative_expression (ASTERISK | DIVISION) metadata_expression
     ;
 
 metadata_expression
     : unary_expression
-    | unary_expression META unary_expression
+    | metadata_expression META unary_expression
     ;
 
 unary_expression
@@ -114,6 +147,8 @@ unary_expression
     | NOT unary_expression
     ;
 
+// ---- Primary expressions ----
+
 primary_expression
     : literal_expression
     | list_expression
@@ -121,19 +156,47 @@ primary_expression
     | identifier_expression
     | section_access_expression
     | parenthesized_expression
-    | primary_expression field_selector
     | implicit_target_field_selection
-    | primary_expression required_projection
-    | primary_expression optional_projection //projection
-    | implicit_target_projection             //field_access_expression
-    | primary_expression OPEN_BRACE item_selector CLOSE_BRACE
-    | primary_expression OPEN_BRACE item_selector CLOSE_BRACE OPTIONAL //item access expression 
-    | primary_expression OPEN_PAREN argument_list? CLOSE_PAREN         //invoke_expression 
+    | implicit_target_projection
     | not_implemented_expression
+    | primary_expression OPEN_PAREN argument_list? CLOSE_PAREN               // invoke-expression
+    | primary_expression OPEN_BRACE item_selector CLOSE_BRACE QUESTION_MARK? // item-access-expression
+    | primary_expression field_selector                                      // field-selection
+    | primary_expression required_projection QUESTION_MARK?                  // projection
     ;
 
 literal_expression
-    : LITERAL
+    : literal
+    ;
+
+literal
+    : logical_literal
+    | number_literal
+    | text_literal
+    | null_literal
+    | verbatim_literal
+    ;
+
+logical_literal
+    : TRUE
+    | FALSE
+    ;
+
+number_literal
+    : DECIMAL_NUMBER_LITERAL
+    | HEXADECIMAL_NUMBER_LITERAL
+    ;
+
+text_literal
+    : TEXT_LITERAL
+    ;
+
+null_literal
+    : NULL_
+    ;
+
+verbatim_literal
+    : VERBATIM_LITERAL
     ;
 
 identifier_expression
@@ -146,15 +209,32 @@ identifier_reference
     ;
 
 exclusive_identifier_reference
-    : IDENTIFIER
+    : identifier
+    | predefined_identifier
     ;
 
 inclusive_identifier_reference
-    : AT IDENTIFIER
+    : AT identifier
+    ;
+
+// The '#'-keywords name library values (#table, #date, #shared, ...) and are
+// used as expressions.
+predefined_identifier
+    : HASH_BINARY
+    | HASH_DATE
+    | HASH_DATETIME
+    | HASH_DATETIMEZONE
+    | HASH_DURATION
+    | HASH_INFINITY
+    | HASH_NAN
+    | HASH_SECTIONS
+    | HASH_SHARED
+    | HASH_TABLE
+    | HASH_TIME
     ;
 
 section_access_expression
-    : IDENTIFIER BANG IDENTIFIER
+    : identifier BANG identifier
     ;
 
 parenthesized_expression
@@ -162,12 +242,11 @@ parenthesized_expression
     ;
 
 not_implemented_expression
-    : ELLIPSES
+    : ELLIPSIS
     ;
 
 argument_list
-    : expression
-    | expression COMMA argument_list
+    : expression (COMMA expression)*
     ;
 
 list_expression
@@ -175,13 +254,11 @@ list_expression
     ;
 
 item_list
-    : item
-    | item COMMA item_list
+    : item (COMMA item)*
     ;
 
 item
-    : expression
-    | expression DOTDOT expression
+    : expression (DOT_DOT expression)?
     ;
 
 record_expression
@@ -189,8 +266,7 @@ record_expression
     ;
 
 field_list
-    : field
-    | field COMMA field_list
+    : field (COMMA field)*
     ;
 
 field
@@ -198,7 +274,8 @@ field
     ;
 
 field_name
-    : IDENTIFIER
+    : generalized_identifier
+    | QUOTED_IDENTIFIER
     ;
 
 item_selector
@@ -215,7 +292,7 @@ required_field_selector
     ;
 
 optional_field_selector
-    : OPEN_BRACKET field_name CLOSE_BRACKET OPTIONAL
+    : OPEN_BRACKET field_name CLOSE_BRACKET QUESTION_MARK
     ;
 
 implicit_target_field_selection
@@ -226,22 +303,18 @@ required_projection
     : OPEN_BRACKET required_selector_list CLOSE_BRACKET
     ;
 
-optional_projection
-    : OPEN_BRACKET required_selector_list CLOSE_BRACKET OPTIONAL
-    ;
-
 required_selector_list
-    : required_field_selector
-    | required_field_selector COMMA required_selector_list
+    : required_field_selector (COMMA required_field_selector)*
     ;
 
 implicit_target_projection
-    : required_projection
-    | optional_projection
+    : required_projection QUESTION_MARK?
     ;
 
+// ---- Functions, each, let, if ----
+
 function_expression
-    : OPEN_PAREN parameter_list? CLOSE_PAREN return_type? '=>' function_body
+    : OPEN_PAREN parameter_list? CLOSE_PAREN return_type? FAT_ARROW function_body
     ;
 
 function_body
@@ -249,50 +322,40 @@ function_body
     ;
 
 parameter_list
-    : fixed_parameter_list
-    | fixed_parameter_list COMMA optional_parameter_list
+    : fixed_parameter_list (COMMA optional_parameter_list)?
+    | optional_parameter_list
     ;
 
 fixed_parameter_list
-    : parameter
-    | parameter COMMA fixed_parameter_list
-    ;
-
-parameter
-    : parameter_name parameter_type?
-    ;
-
-parameter_name
-    : IDENTIFIER
-    ;
-
-parameter_type
-    : assertion
-    ;
-
-return_type
-    : assertion
-    ;
-
-assertion
-    : AS nullable_primitive_type
+    : parameter (COMMA parameter)*
     ;
 
 optional_parameter_list
-    : optional_parameter
-    | optional_parameter COMMA optional_parameter_list
+    : optional_parameter (COMMA optional_parameter)*
     ;
 
 optional_parameter
-    : OPTIONAL_TEXT parameter
+    : OPTIONAL parameter
+    ;
+
+parameter
+    : parameter_name primitive_or_nullable_primitive_type_assertion?
+    ;
+
+parameter_name
+    : identifier
+    ;
+
+return_type
+    : primitive_or_nullable_primitive_type_assertion
+    ;
+
+primitive_or_nullable_primitive_type_assertion
+    : AS primitive_or_nullable_primitive_type
     ;
 
 each_expression
-    : EACH each_expression_body
-    ;
-
-each_expression_body
-    : function_body
+    : EACH function_body
     ;
 
 let_expression
@@ -300,8 +363,7 @@ let_expression
     ;
 
 variable_list
-    : variable
-    | variable COMMA variable_list
+    : variable (COMMA variable)*
     ;
 
 variable
@@ -309,42 +371,36 @@ variable
     ;
 
 variable_name
-    : IDENTIFIER
+    : identifier
     ;
 
 if_expression
-    : IF if_condition THEN true_expression ELSE false_expression
+    : IF expression THEN expression ELSE expression
     ;
 
-if_condition
-    : expression
-    ;
-
-true_expression
-    : expression
-    ;
-
-false_expression
-    : expression
-    ;
+// ---- Types ----
 
 type_expression
     : primary_expression
     | TYPE primary_type
     ;
 
-type_expr
-    : parenthesized_expression
-    | primary_type
+type_
+    : primary_type
+    | primary_expression
     ;
 
 primary_type
-    : primitive_type
+    : primitive_or_nullable_primitive_type
     | record_type
     | list_type
     | function_type
     | table_type
     | nullable_type
+    ;
+
+primitive_or_nullable_primitive_type
+    : NULLABLE? primitive_type
     ;
 
 primitive_type
@@ -359,114 +415,115 @@ primitive_type
     | LIST
     | LOGICAL
     | NONE
+    | NULL_
     | NUMBER
     | RECORD
     | TABLE
     | TEXT
+    | TIME
     | TYPE
-    | LITERAL
     ;
 
 record_type
-    : OPEN_BRACKET open_record_marker CLOSE_BRACKET
+    : OPEN_BRACKET ELLIPSIS CLOSE_BRACKET
     | OPEN_BRACKET field_specification_list? CLOSE_BRACKET
-    | OPEN_BRACKET field_specification_list COMMA open_record_marker CLOSE_BRACKET
+    | OPEN_BRACKET field_specification_list COMMA ELLIPSIS CLOSE_BRACKET
     ;
 
 field_specification_list
-    : field_specification
-    | field_specification COMMA field_specification_list
+    : field_specification (COMMA field_specification)*
     ;
 
 field_specification
-    : OPTIONAL_TEXT? field_name field_type_specification?
+    : OPTIONAL? field_name field_type_specification?
     ;
 
 field_type_specification
-    : EQUALS field_type
-    ;
-
-field_type
-    : type_expr
-    ;
-
-open_record_marker
-    : ELLIPSES
+    : EQUALS type_
     ;
 
 list_type
-    : OPEN_BRACE item_type CLOSE_BRACE
-    ;
-
-item_type
-    : type_expr
+    : OPEN_BRACE type_ CLOSE_BRACE
     ;
 
 function_type
-    : FUNCTION_START parameter_specification_list? CLOSE_PAREN return_type
+    : FUNCTION OPEN_PAREN parameter_specification_list? CLOSE_PAREN return_type
     ;
 
 parameter_specification_list
-    : required_parameter_specification_list
-    | required_parameter_specification_list COMMA optional_parameter_specification_list
+    : required_parameter_specification_list (COMMA optional_parameter_specification_list)?
     | optional_parameter_specification_list
     ;
 
 required_parameter_specification_list
-    : required_parameter_specification
-    | required_parameter_specification COMMA required_parameter_specification_list
-    ;
-
-required_parameter_specification
-    : parameter_specification
+    : parameter_specification (COMMA parameter_specification)*
     ;
 
 optional_parameter_specification_list
-    : optional_parameter_specification
-    | optional_parameter_specification COMMA optional_parameter_specification_list
+    : optional_parameter_specification (COMMA optional_parameter_specification)*
     ;
 
 optional_parameter_specification
-    : OPTIONAL_TEXT parameter_specification
+    : OPTIONAL parameter_specification
     ;
 
 parameter_specification
-    : parameter_name parameter_type
+    : parameter_name type_assertion
     ;
 
+type_assertion
+    : AS type_
+    ;
+
+// 'table' followed by an expression (type table (Type.ForRecord(r, false))) is
+// accepted by Power Query and used in Microsoft's own connector samples.
 table_type
     : TABLE row_type
+    | TABLE primary_expression
     ;
 
 row_type
-    : OPEN_BRACKET field_specification_list CLOSE_BRACKET
+    : OPEN_BRACKET field_specification_list? CLOSE_BRACKET
     ;
 
 nullable_type
-    : NULLABLE type_expr
+    : NULLABLE type_
     ;
+
+// ---- Errors ----
 
 error_raising_expression
     : ERROR expression
     ;
 
 error_handling_expression
-    : TRY protected_expression otherwise_clause?
+    : TRY protected_expression error_handler?
     ;
 
 protected_expression
     : expression
     ;
 
+error_handler
+    : otherwise_clause
+    | catch_clause
+    ;
+
 otherwise_clause
-    : OTHERWISE default_expression
+    : OTHERWISE expression
     ;
 
-default_expression
-    : expression
+catch_clause
+    : CATCH catch_function
     ;
 
-literal_attribs
+catch_function
+    : OPEN_PAREN parameter_name? CLOSE_PAREN FAT_ARROW function_body
+    ;
+
+// ---- Literal attributes ----
+
+literal_attributes
     : record_literal
     ;
 
@@ -475,8 +532,7 @@ record_literal
     ;
 
 literal_field_list
-    : literal_field
-    | literal_field COMMA literal_field_list
+    : literal_field (COMMA literal_field)*
     ;
 
 literal_field
@@ -488,12 +544,82 @@ list_literal
     ;
 
 literal_item_list
-    : any_literal
-    | any_literal COMMA literal_item_list
+    : any_literal (COMMA any_literal)*
     ;
 
 any_literal
     : record_literal
     | list_literal
-    | LITERAL
+    | logical_literal
+    | number_literal
+    | text_literal
+    | null_literal
+    ;
+
+// ---- Identifiers ----
+
+identifier
+    : REGULAR_IDENTIFIER
+    | QUOTED_IDENTIFIER
+    | contextual_keyword
+    ;
+
+// Words the lexer tokenizes for the grammar's sake but M does not reserve.
+contextual_keyword
+    : CATCH
+    | OPTIONAL
+    | NULLABLE
+    | ANY
+    | ANYNONNULL
+    | BINARY
+    | DATE
+    | DATETIME
+    | DATETIMEZONE
+    | DURATION
+    | FUNCTION
+    | LIST
+    | LOGICAL
+    | NONE
+    | NUMBER
+    | RECORD
+    | TABLE
+    | TEXT
+    | TIME
+    ;
+
+// A field name: any mix of identifiers, keywords and numbers, e.g.
+// [Sales Amount], [1st Quarter], [if], [Column1.1].
+generalized_identifier
+    : generalized_identifier_part+
+    ;
+
+generalized_identifier_part
+    : REGULAR_IDENTIFIER
+    | contextual_keyword
+    | keyword
+    | DECIMAL_NUMBER_LITERAL
+    ;
+
+keyword
+    : AND
+    | AS
+    | EACH
+    | ELSE
+    | ERROR
+    | FALSE
+    | IF
+    | IN
+    | IS
+    | LET
+    | META
+    | NOT
+    | NULL_
+    | OR
+    | OTHERWISE
+    | SECTION
+    | SHARED
+    | THEN
+    | TRUE
+    | TRY
+    | TYPE
     ;
